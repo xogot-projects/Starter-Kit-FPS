@@ -2,6 +2,7 @@ extends CharacterBody3D
 
 @export_subgroup("Properties")
 @export var movement_speed = 5
+@export_range(0, 100) var number_of_jumps: int = 2
 @export var jump_strength = 8
 
 @export_subgroup("Weapons")
@@ -20,17 +21,16 @@ var rotation_target: Vector3
 
 var input_mouse: Vector2
 
-var health:int = 100
+var health: int = 100
 var gravity := 0.0
 
 var previously_floored := false
 
-var jump_single := true
-var jump_double := true
+var jumps_remaining: int
 
 var container_offset = Vector3(1.2, -1.1, -2.75)
 
-var tween:Tween
+var tween: Tween
 
 signal health_updated
 
@@ -41,43 +41,34 @@ signal health_updated
 @onready var sound_footsteps = $SoundFootsteps
 @onready var blaster_cooldown = $Cooldown
 
-@export var crosshair:TextureRect
+@export var crosshair: TextureRect
 
 # Functions
 
 func _ready():
-	
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	
 	weapon = weapons[weapon_index] # Weapon must never be nil
 	initiate_change_weapon(weapon_index)
 
-func _physics_process(delta):
-	
+func _process(delta):
 	# Handle functions
-	
 	handle_controls(delta)
 	handle_gravity(delta)
 	
 	# Movement
-
+	
 	var applied_velocity: Vector3
 	
 	movement_velocity = transform.basis * movement_velocity # Move forward
 	
 	applied_velocity = velocity.lerp(movement_velocity, delta * 10)
-	applied_velocity.y = -gravity
+	applied_velocity.y = - gravity
 	
 	velocity = applied_velocity
 	move_and_slide()
 	
-	# Rotation
-	
-	camera.rotation.z = lerp_angle(camera.rotation.z, -input_mouse.x * 25 * delta, delta * 5)	
-	
-	camera.rotation.x = lerp_angle(camera.rotation.x, rotation_target.x, delta * 25)
-	rotation.y = lerp_angle(rotation.y, rotation_target.y, delta * 25)
-	
+	# Rotation 
 	container.position = lerp(container.position, container_offset - (basis.inverse() * applied_velocity / 30), delta * 10)
 	
 	# Movement sound
@@ -107,16 +98,11 @@ func _physics_process(delta):
 
 func _input(event):
 	if event is InputEventMouseMotion and mouse_captured:
-		
 		input_mouse = event.relative / mouse_sensitivity
-		
-		rotation_target.y -= event.relative.x / mouse_sensitivity
-		rotation_target.x -= event.relative.y / mouse_sensitivity
+		handle_rotation(event.relative.x, event.relative.y, false)
 
-func handle_controls(_delta):
-	
+func handle_controls(delta):
 	# Mouse capture
-	
 	if Input.is_action_just_pressed("mouse_capture"):
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 		mouse_captured = true
@@ -128,17 +114,13 @@ func handle_controls(_delta):
 		input_mouse = Vector2.ZERO
 	
 	# Movement
-	
 	var input := Input.get_vector("move_left", "move_right", "move_forward", "move_back")
-	
 	movement_velocity = Vector3(input.x, 0, input.y).normalized() * movement_speed
 	
-	# Rotation
-	
+	# Handle Controller Rotation
 	var rotation_input := Input.get_vector("camera_right", "camera_left", "camera_down", "camera_up")
-	
-	rotation_target -= Vector3(-rotation_input.y, -rotation_input.x, 0).limit_length(1.0) * gamepad_sensitivity
-	rotation_target.x = clamp(rotation_target.x, deg_to_rad(-90), deg_to_rad(90))
+	if rotation_input:
+		handle_rotation(rotation_input.x, rotation_input.y, true, delta)
 	
 	# Shooting
 	
@@ -147,54 +129,50 @@ func handle_controls(_delta):
 	# Jumping
 	
 	if Input.is_action_just_pressed("jump"):
-		
-		if jump_single or jump_double:
-			Audio.play("sounds/jump_a.ogg, sounds/jump_b.ogg, sounds/jump_c.ogg")
-		
-		if jump_double:
-			
-			gravity = -jump_strength
-			jump_double = false
-			
-		if(jump_single): action_jump()
+		if jumps_remaining:
+			action_jump()
 		
 	# Weapon switching
 	
 	action_weapon_toggle()
 
+# Camera rotation
+
+func handle_rotation(xRot: float, yRot: float, isController: bool, delta: float = 0.0):
+	if isController:
+		rotation_target -= Vector3(-yRot, -xRot, 0).limit_length(1.0) * gamepad_sensitivity
+		rotation_target.x = clamp(rotation_target.x, deg_to_rad(-90), deg_to_rad(90))
+		camera.rotation.x = lerp_angle(camera.rotation.x, rotation_target.x, delta * 25)
+		rotation.y = lerp_angle(rotation.y, rotation_target.y, delta * 25)
+	else:
+		rotation_target += (Vector3(-yRot, -xRot, 0) / mouse_sensitivity)
+		rotation_target.x = clamp(rotation_target.x, deg_to_rad(-90), deg_to_rad(90))
+		camera.rotation.x = rotation_target.x;
+		rotation.y = rotation_target.y;
+	
 # Handle gravity
 
 func handle_gravity(delta):
-	
 	gravity += 20 * delta
 	
 	if gravity > 0 and is_on_floor():
-		
-		jump_single = true
+		jumps_remaining = number_of_jumps
 		gravity = 0
 
 # Jumping
 
 func action_jump():
-	
-	gravity = -jump_strength
-	
-	jump_single = false;
-	jump_double = true;
+	Audio.play("sounds/jump_a.ogg, sounds/jump_b.ogg, sounds/jump_c.ogg")
+	gravity = - jump_strength
+	jumps_remaining -= 1
 
 # Shooting
 
 func action_shoot():
-	
 	if Input.is_action_pressed("shoot"):
-	
 		if !blaster_cooldown.is_stopped(): return # Cooldown for shooting
 		
 		Audio.play(weapon.sound_shoot)
-		
-		container.position.z += 0.25 # Knockback of weapon visual
-		camera.rotation.x += 0.025 # Knockback of camera
-		movement_velocity += Vector3(0, 0, weapon.knockback) # Knockback
 		
 		# Set muzzle flash position, play animation
 		
@@ -209,7 +187,6 @@ func action_shoot():
 		# Shoot the weapon, amount based on shot count
 		
 		for n in weapon.shot_count:
-		
 			raycast.target_position.x = randf_range(-weapon.spread, weapon.spread)
 			raycast.target_position.y = randf_range(-weapon.spread, weapon.spread)
 			
@@ -234,14 +211,21 @@ func action_shoot():
 			get_tree().root.add_child(impact_instance)
 			
 			impact_instance.position = raycast.get_collision_point() + (raycast.get_collision_normal() / 10)
-			impact_instance.look_at(camera.global_transform.origin, Vector3.UP, true) 
+			impact_instance.look_at(camera.global_transform.origin, Vector3.UP, true)
+			
+		var knockback = random_vec2(weapon.min_knockback, weapon.max_knockback)
+		# print('knockback', knockback)
+		container.position.z += 0.25 # Knockback of weapon visual
+		camera.rotation.x += knockback.x # Knockback of camera
+		rotation.y += knockback.y
+		rotation_target.x += knockback.x
+		rotation_target.y += knockback.y
+		movement_velocity += Vector3(0, 0, weapon.knockback) # Knockback
 
 # Toggle between available weapons (listed in 'weapons')
 
 func action_weapon_toggle():
-	
 	if Input.is_action_just_pressed("weapon_toggle"):
-		
 		weapon_index = wrap(weapon_index + 1, 0, weapons.size())
 		initiate_change_weapon(weapon_index)
 		
@@ -250,7 +234,6 @@ func action_weapon_toggle():
 # Initiates the weapon changing animation (tween)
 
 func initiate_change_weapon(index):
-	
 	weapon_index = index
 	
 	tween = get_tree().create_tween()
@@ -261,7 +244,6 @@ func initiate_change_weapon(index):
 # Switches the weapon model (off-screen)
 
 func change_weapon():
-	
 	weapon = weapons[weapon_index]
 
 	# Step 1. Remove previous weapon model(s) from container
@@ -288,9 +270,13 @@ func change_weapon():
 	crosshair.texture = weapon.crosshair
 
 func damage(amount):
-	
 	health -= amount
 	health_updated.emit(health) # Update health on HUD
 	
 	if health < 0:
 		get_tree().reload_current_scene() # Reset when out of health
+
+# Create a random knockback vector
+static func random_vec2(_min: Vector2, _max: Vector2) -> Vector2:
+	var _sign = -1 if randi() % 2 == 0 else 1
+	return Vector2(randf_range(_min.x, _max.x), randf_range(_min.y, _max.y) * _sign)
